@@ -496,7 +496,7 @@ impl InvoiceQrApp {
 
                         // 处理剪贴板复制（在循环外，避免借用冲突）
                         if let Some(val) = clicked_value {
-                            ui.ctx().output_mut().copied_text = val;
+                            ui.ctx().output_mut(|o| o.copied_text = val);
                         }
                     });
             });
