@@ -111,17 +111,17 @@ impl InvoiceQrApp {
                 .map(|e| e.path().to_string_lossy().to_string())
                 .collect();
             pdfs.sort();
-            let added = pdfs
-                .into_iter()
-                .filter(|f| !self.file_list.contains(f))
-                .count();
-            for f in pdfs {
-                if !self.file_list.contains(&f) {
-                    self.file_list.push(f);
-                }
+        let added: Vec<String> = pdfs
+                .iter()
+                .filter(|f| !self.file_list.contains(*f))
+                .cloned()
+                .collect();
+            let added_count = added.len();
+            for f in added {
+                self.file_list.push(f);
             }
-            if added > 0 {
-                self.add_log(&format!("从文件夹添加了 {} 个PDF文件", added));
+            if added_count > 0 {
+                self.add_log(&format!("从文件夹添加了 {} 个PDF文件", added_count));
                 self.update_status();
             }
         }
@@ -268,42 +268,69 @@ impl InvoiceQrApp {
 
     /// 处理UI事件
     fn process_events(&mut self) {
-        if let Some(rx) = &self.event_rx {
-            while let Ok(event) = rx.try_recv() {
-                match event {
-                    UiEvent::Progress(current, total) => {
-                        self.progress_current = current;
-                        self.progress_total = total;
-                        self.status_text = format!("正在处理 {}/{}", current, total);
-                    }
-                    UiEvent::Log(msg) => {
-                        self.add_log(&msg);
-                    }
-                    UiEvent::Finished(success, csv_path) => {
-                        self.is_processing = false;
-                        self.progress_current = self.progress_total;
-                        self.status_text = "完成".to_string();
-                        self.add_log(&format!(
-                            "\n✅ 处理完成！成功识别 {} 个文件",
-                            success
-                        ));
-                        self.add_log(&format!("📄 结果已保存: {}", csv_path));
-                        self.event_rx = None;
-                    }
-                    UiEvent::Error(err) => {
-                        self.is_processing = false;
-                        self.status_text = "出错".to_string();
-                        self.show_error_dialog = Some(err);
-                        self.event_rx = None;
-                    }
+        // 先取出 receiver，避免 self 的借用冲突
+        if self.event_rx.is_none() {
+            return;
+        }
+        let rx = self.event_rx.take().unwrap();
+
+        let mut is_finished = false;
+        let mut finished_success = 0;
+        let mut finished_csv = String::new();
+        let mut error_msg = String::new();
+        let mut log_entries: Vec<String> = Vec::new();
+
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                UiEvent::Progress(current, total) => {
+                    self.progress_current = current;
+                    self.progress_total = total;
+                    self.status_text = format!("正在处理 {}/{}", current, total);
+                }
+                UiEvent::Log(msg) => {
+                    log_entries.push(msg);
+                }
+                UiEvent::Finished(success, csv_path) => {
+                    is_finished = true;
+                    finished_success = success;
+                    finished_csv = csv_path;
+                }
+                UiEvent::Error(err) => {
+                    is_finished = true;
+                    error_msg = err;
                 }
             }
+        }
+
+        // 批量写入日志（避免借用冲突）
+        for msg in &log_entries {
+            self.add_log(msg);
+        }
+
+        if is_finished {
+            if error_msg.is_empty() {
+                self.is_processing = false;
+                self.progress_current = self.progress_total;
+                self.status_text = "完成".to_string();
+                self.add_log(&format!(
+                    "\n✅ 处理完成！成功识别 {} 个文件",
+                    finished_success
+                ));
+                self.add_log(&format!("📄 结果已保存: {}", finished_csv));
+            } else {
+                self.is_processing = false;
+                self.status_text = "出错".to_string();
+                self.show_error_dialog = Some(error_msg);
+            }
+            // 处理完成，不保存 receiver
+        } else {
+            // 未完成，放回去继续用
+            self.event_rx = Some(rx);
         }
     }
 
     // ─── 从文件拖放到窗口 ───
     fn drag_and_drop(&mut self, ctx: &egui::Context) {
-        use egui::*;
 
         // 使用 egui 的拖放支持
         if !self.is_processing {
@@ -383,7 +410,7 @@ impl eframe::App for InvoiceQrApp {
 
             // ── 文件列表 ──
             egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+                .inner_margin(egui::Margin::symmetric(4, 2))
                 .show(ui, |ui| {
                     ui.label("文件列表（拖拽PDF到此处）");
                     ui.separator();
@@ -392,7 +419,7 @@ impl eframe::App for InvoiceQrApp {
                     let list_height = available_height.max(50.0) * 0.4;
 
                     egui::ScrollArea::vertical()
-                        .id_source("file_list")
+                        .id_salt("file_list")
                         .auto_shrink([false, false])
                         .max_height(list_height)
                         .show(ui, |ui| {
@@ -404,7 +431,7 @@ impl eframe::App for InvoiceQrApp {
                                 let mut to_move_down: Vec<usize> = Vec::new();
 
                                 for (i, file_path) in self.file_list.iter().enumerate() {
-                                    let filename = Path::new(file_path)
+                                    let _filename = Path::new(file_path)
                                         .file_name()
                                         .map(|n| n.to_string_lossy().to_string())
                                         .unwrap_or_else(|| file_path.clone());
@@ -492,14 +519,14 @@ impl eframe::App for InvoiceQrApp {
             // ── 日志区 ──
             ui.add_space(4.0);
             egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+                .inner_margin(egui::Margin::symmetric(4, 2))
                 .show(ui, |ui| {
                     ui.label("运行日志");
                     ui.separator();
 
                     let log_height = ui.available_height().max(80.0);
                     egui::ScrollArea::vertical()
-                        .id_source("log_area")
+                        .id_salt("log_area")
                         .auto_shrink([false, false])
                         .max_height(log_height)
                         .stick_to_bottom(true)

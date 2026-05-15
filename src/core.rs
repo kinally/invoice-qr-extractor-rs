@@ -201,12 +201,12 @@ fn decode_qr_from_bytes(img_bytes: &[u8]) -> Option<String> {
 /// 使用rqrr从DynamicImage中解码二维码
 fn decode_qr_from_image(img: &image::DynamicImage) -> Option<String> {
     let gray = img.to_luma8();
-    let prepared = rqrr::PreparedImage::prepare(gray);
-    let grids = prepared.detect_grids().ok()?;
+    let mut prepared = rqrr::PreparedImage::prepare(gray);
+    let grids = prepared.detect_grids();
 
     for grid in &grids {
-        if let Ok((data, _)) = grid.decode() {
-            return Some(data.to_string());
+        if let Ok((_, content)) = grid.decode() {
+            return Some(content);
         }
     }
 
