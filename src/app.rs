@@ -9,7 +9,7 @@ use crate::core;
 enum UiEvent {
     Progress(usize, usize),
     Log(String),
-    Finished(usize, String),
+    Finished(usize, String, Vec<(usize, String, String, String)>),
     Error(String),
 }
 
@@ -42,6 +42,10 @@ pub struct InvoiceQrApp {
 
     // 拖拽状态
     drag_hover: bool,
+
+    // 结果展示
+    result_rows: Vec<(usize, String, String, String)>,
+    show_results: bool,
 }
 
 impl Default for InvoiceQrApp {
@@ -69,6 +73,8 @@ impl Default for InvoiceQrApp {
             show_confirm_exit: false,
             show_error_dialog: None,
             drag_hover: false,
+            result_rows: Vec::new(),
+            show_results: false,
         }
     }
 }
@@ -241,7 +247,7 @@ impl InvoiceQrApp {
         let progress_tx = tx.clone();
 
         thread::spawn(move || {
-            let result = core::process_pdfs(
+            let (success_count, rows) = core::process_pdfs(
                 &files,
                 &csv_out,
                 |current, total| {
@@ -253,7 +259,7 @@ impl InvoiceQrApp {
             );
 
             // 发送完成事件
-            let _ = tx.send(UiEvent::Finished(result, csv_out.clone()));
+            let _ = tx.send(UiEvent::Finished(success_count, csv_out.clone(), rows));
 
             // 自动打开输出文件夹
             if let Some(parent) = Path::new(&csv_out).parent() {
@@ -290,10 +296,12 @@ impl InvoiceQrApp {
                 UiEvent::Log(msg) => {
                     log_entries.push(msg);
                 }
-                UiEvent::Finished(success, csv_path) => {
+                UiEvent::Finished(success, csv_path, rows) => {
                     is_finished = true;
                     finished_success = success;
                     finished_csv = csv_path;
+                    self.result_rows = rows;
+                    self.show_results = true;
                 }
                 UiEvent::Error(err) => {
                     is_finished = true;
@@ -353,6 +361,146 @@ impl InvoiceQrApp {
             });
         }
     }
+
+    // ─── 结果展示界面（点击复制）───
+    fn render_results(&mut self, ui: &mut egui::Ui) {
+        ui.heading("📊 提取结果");
+        ui.add_space(4.0);
+
+        // 顶部工具栏
+        ui.horizontal(|ui| {
+            if ui.button("⬅ 返回主界面").clicked() {
+                self.show_results = false;
+            }
+            let success_count = self.result_rows.iter().filter(|r| r.3 == "成功").count();
+            let fail_count = self.result_rows.len() - success_count;
+            ui.label(format!(
+                "共 {} 条 | ✅ 成功 {} | ❌ 失败 {}",
+                self.result_rows.len(),
+                success_count,
+                fail_count
+            ));
+        });
+        ui.add_space(4.0);
+
+        // 列标题
+        let headers = ["序号", "文件名", "二维码内容", "状态"];
+        let col_widths = [40.0, 200.0, ui.available_width() - 40.0 - 200.0 - 60.0 - 16.0, 60.0];
+
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(4, 2))
+            .show(ui, |ui| {
+                // 表头
+                ui.horizontal(|ui| {
+                    let mut x = 0.0;
+                    for (i, h) in headers.iter().enumerate() {
+                        ui.add_sized(
+                            [col_widths[i], 20.0],
+                            egui::Label::new(egui::RichText::new(*h).strong()),
+                        );
+                        x += col_widths[i];
+                    }
+                });
+                ui.separator();
+
+                // 表格滚动区
+                let table_height = ui.available_height().max(100.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("results_table")
+                    .auto_shrink([false, false])
+                    .max_height(table_height)
+                    .show(ui, |ui| {
+                        let text_style = egui::TextStyle::Body;
+                        let row_height = ui.text_style_height(&text_style) + 4.0;
+
+                        let mut clicked_value: Option<String> = None;
+
+                        for (i, row) in self.result_rows.iter().enumerate() {
+                            let (idx, filename, qr_data, status) = row;
+
+                            let is_success = status == "成功";
+                            let bg_color = if i % 2 == 0 {
+                                egui::Color32::from_rgb(0xf8, 0xf9, 0xfa)
+                            } else {
+                                egui::Color32::WHITE
+                            };
+
+                            ui.horizontal(|ui| {
+                                // 序号
+                                let resp = ui.add_sized(
+                                    [col_widths[0], row_height],
+                                    egui::Label::new(idx.to_string()).sense(egui::Sense::click()),
+                                );
+                                if resp.clicked() {
+                                    clicked_value = Some(idx.to_string());
+                                }
+                                resp.on_hover_text("点击复制");
+
+                                // 文件名（可点击复制）
+                                let resp = ui.add_sized(
+                                    [col_widths[1], row_height],
+                                    egui::Label::new(
+                                        egui::RichText::new(filename.as_str())
+                                            .color(egui::Color32::from_rgb(0x2c, 0x3e, 0x50)),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                if resp.clicked() {
+                                    clicked_value = Some(filename.clone());
+                                }
+                                resp.on_hover_text("点击复制");
+
+                                // 二维码内容（可点击复制）
+                                let resp = ui.add_sized(
+                                    [col_widths[2], row_height],
+                                    egui::Label::new(
+                                        egui::RichText::new(qr_data.as_str())
+                                            .color(egui::Color32::from_rgb(0x0d, 0x6e, 0x2d)),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                if resp.clicked() {
+                                    clicked_value = Some(qr_data.clone());
+                                }
+                                resp.on_hover_text("点击复制");
+
+                                // 状态
+                                let status_color = if is_success {
+                                    egui::Color32::from_rgb(0x2e, 0xcc, 0x71)
+                                } else {
+                                    egui::Color32::from_rgb(0xe7, 0x4c, 0x3c)
+                                };
+                                let resp = ui.add_sized(
+                                    [col_widths[3], row_height],
+                                    egui::Label::new(
+                                        egui::RichText::new(status.as_str()).color(status_color),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                if resp.clicked() {
+                                    clicked_value = Some(status.clone());
+                                }
+                                resp.on_hover_text("点击复制");
+                            });
+
+                            // 行间隔色
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    ui.cursor().left_top(),
+                                    egui::vec2(ui.available_width(), row_height),
+                                ),
+                                0.0,
+                                bg_color,
+                            );
+                        }
+
+                        // 处理剪贴板复制（在循环外，避免借用冲突）
+                        if let Some(val) = clicked_value {
+                            ui.ctx().copy_to_clipboard(val);
+                        }
+                    });
+            });
+    }
 }
 
 // ─── egui UI 实现 ───
@@ -370,9 +518,14 @@ impl eframe::App for InvoiceQrApp {
 
         // ── 窗口配置 ──
         egui::CentralPanel::default().show(ctx, |ui| {
-            // ── 标题 ──
-            ui.heading("发票PDF二维码提取工具");
-            ui.add_space(6.0);
+            if self.show_results && !self.is_processing {
+                // ── 结果展示视图 ──
+                self.render_results(ui);
+            } else {
+                // ── 主操作视图 ──
+                // ── 标题 ──
+                ui.heading("发票PDF二维码提取工具");
+                ui.add_space(6.0);
 
             // ── 操作按钮区 ──
             ui.horizontal(|ui| {
@@ -541,6 +694,7 @@ impl eframe::App for InvoiceQrApp {
                             );
                         });
                 });
+            }  // else (main view) end
         });
 
         // ── 对话框 ──

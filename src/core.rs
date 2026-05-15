@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
 use windows::Graphics::Imaging::{BitmapDecoder, BitmapEncoder, BitmapPixelFormat, SoftwareBitmap};
+use windows::Storage::StorageFile;
 use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
 
 /// 从PDF中提取二维码的结果
@@ -140,7 +141,7 @@ fn render_page_to_png_bytes(page: &windows::Data::Pdf::PdfPage) -> Result<Vec<u8
     // 将SoftwareBitmap编码为PNG字节
     let out_stream = InMemoryRandomAccessStream::new()?;
     let encoder = BitmapEncoder::CreateAsync(
-        &BitmapEncoder::PngEncoderId()?,
+        BitmapEncoder::PngEncoderId()?,
         &out_stream,
     )?.get()?;
 
@@ -216,13 +217,13 @@ fn decode_qr_from_image(img: &image::DynamicImage) -> Option<String> {
 // ─── 批量处理 ───
 
 /// 批量处理PDF文件，输出CSV
-/// 返回: 成功识别的文件数
+/// 返回: (成功识别的文件数, 结果行数据)
 pub fn process_pdfs(
     pdf_paths: &[String],
     output_csv: &str,
     progress_callback: impl Fn(usize, usize),
     log_callback: impl Fn(&str),
-) -> usize {
+) -> (usize, Vec<(usize, String, String, String)>) {
     let mut rows: Vec<(usize, String, String, String)> = Vec::new();
     let mut success_count = 0;
     let total = pdf_paths.len();
@@ -281,7 +282,7 @@ pub fn process_pdfs(
         }
     }
 
-    success_count
+    (success_count, rows)
 }
 
 // ─── CSV 写入 ───
